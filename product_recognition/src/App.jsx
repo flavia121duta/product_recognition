@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import './App.css'
+import "./css/App.css"; // Importing the CSS file for styling
 
 const App = () => {
     // Stores array of objects: { src: dataURL, data: base64Data, id: uniqueId, type: mimeType }
