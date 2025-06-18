@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import "./css/App.css"; // Importing the CSS file for styling
 
+
 const App = () => {
     // Stores array of objects: { src: dataURL, data: base64Data, id: uniqueId, type: mimeType }
     const [uploadedImages, setUploadedImages] = useState([]);
@@ -78,7 +79,7 @@ const App = () => {
         const results = [];
         // Updated prompt to request JSON structured data
         const basePrompt = "Identify all distinct products visible in this image. For each product, extract its name and any visible price. Respond with a JSON array where each object has 'productName' (string) and 'price' (string, or 'N/A' if no price is visible). If no products are identified, return an empty array.";
-        const apiKey = "AIzaSyCdIvNF2UJ4tm2bO4NUijrtDc93-HIICAk"; // API key will be provided by Canvas runtime
+        const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
         for (const image of uploadedImages) {
