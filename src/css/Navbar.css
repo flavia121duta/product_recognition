@@ -1,0 +1,10 @@
+.navbar-wrapper {
+  width: 100%;
+  background-color: #f8f9fa;
+}
+
+.navbar-inner {
+  max-width: 1152px;
+  margin: 0 auto;
+  width: 100%;
+}
