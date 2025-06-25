@@ -1,20 +1,47 @@
-import React from "react";
+import React, { useState } from "react";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth } from "../firebase";
 import "../css/Login.css";
+import { useNavigate } from "react-router-dom";
 
 function Login() {
+  const [email, setEmail] = useState("");         // 👈 can be email or username depending on setup
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");         // 👈 to store error message
+  const navigate = useNavigate();
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(""); // clear previous errors
+
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      navigate("/"); // redirect on success
+    } catch (err) {
+      setError("Invalid email or password"); // or customize with err.code
+    }
+  };
+
   return (
     <div className="login-form-container">
       <h2 className="mb-4">Login</h2>
-      <form>
+      
+      {/* 👇 Error Message */}
+      {error && <div className="alert alert-danger">{error}</div>}
+
+      <form onSubmit={handleSubmit}>
         <div className="mb-3">
           <label htmlFor="username" className="form-label">
-            Username
+            Email
           </label>
           <input
-            type="text"
+            type="email"
             id="username"
             className="form-control"
-            placeholder="Enter your username"
+            placeholder="Enter your email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
           />
         </div>
 
@@ -27,6 +54,9 @@ function Login() {
             id="password"
             className="form-control"
             placeholder="Enter your password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
           />
         </div>
 

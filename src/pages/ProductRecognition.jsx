@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
-import Navbar from "../components/Navbar";
-import Button from "../components/Button";
 
 function ProductRecognition() {
 
-    // Stores array of objects: { src: dataURL, data: base64Data, id: uniqueId, type: mimeType }
+     // Stores array of objects: { src: dataURL, data: base64Data, id: uniqueId, type: mimeType }
     const [uploadedImages, setUploadedImages] = useState([]);
-    // Stores recognition results for each image: [{ imageId: string, fileName: string, products: [{ productName: string, price: string }], error: string }]
+    // Stores recognition results for each image: [{ imageId: string, fileName: string, products: [{ productName: string, price: string, brand: string, barcode: string }], error: string }]
     const [individualRecognitionResults, setIndividualRecognitionResults] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
     const [globalError, setGlobalError] = useState(''); // For errors not tied to a specific image
+
+    const MAX_FILES = 1000; // Define the maximum number of files allowed
+    const MAX_ATTEMPTS_PER_IMAGE = 3; // Max attempts for AI recognition per image
 
     /**
      * Handles file selection from the input, allowing multiple files.
@@ -18,14 +19,23 @@ function ProductRecognition() {
      */
     const handleImageUpload = (event) => {
         const files = Array.from(event.target.files);
+       
+        // Clear previous state regardless of new files chosen
+        setUploadedImages([]);
+        setIndividualRecognitionResults([]);
+        setGlobalError('');
+
         if (files.length === 0) {
-            setUploadedImages([]);
-            setIndividualRecognitionResults([]); // Clear results when new images are uploaded
+            return; // No files selected
+        }
+
+        if (files.length > MAX_FILES) {
+            setGlobalError(`You can only upload a maximum of ${MAX_FILES} files at once. Please select fewer files.`);
+            // Clear the input value so the same files can be selected again after error
+            event.target.value = null;
             return;
         }
 
-        setGlobalError(''); // Clear previous global errors
-        setIndividualRecognitionResults([]); // Clear previous results
         const newImages = [];
         let filesProcessed = 0;
 
@@ -78,82 +88,139 @@ function ProductRecognition() {
         }
 
         const results = [];
-        // Updated prompt to request JSON structured data
-        const basePrompt = "Identify all distinct products visible in this image. For each product, extract its name and any visible price. Respond with a JSON array where each object has 'productName' (string) and 'price' (string, or 'N/A' if no price is visible). If no products are identified, return an empty array.";
+        // UPDATED PROMPT: Added request for 'barcode' property
+        const basePrompt = `Identify all distinct products visible in this image. For each product, extract its name, any visible price, any visible brand, and any visible barcode number.
+        Respond with a JSON array where each object has 'productName' (string), 'price' (string, or 'N/A' if no price is visible), 'brand' (string, or 'N/A' if no brand is visible), and 'barcode' (string, or 'N/A' if no barcode is visible).
+        If no products are identified, return an empty array [].
+        Example:
+        [
+          {"productName": "Milk (1L)", "price": "$3.49", "brand": "DairyCo", "barcode": "123456789012"},
+          {"productName": "Bread (Whole Wheat)", "price": "N/A", "brand": "Bakery Delights", "barcode": "N/A"}
+        ]`;
         const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
         for (const image of uploadedImages) {
-            const chatHistory = [];
-            chatHistory.push({ role: "user", parts: [{ text: basePrompt }] });
-
-            const payload = {
-                contents: [{
-                    role: "user",
-                    parts: [
-                        { text: basePrompt },
-                        {
-                            inlineData: {
-                                mimeType: image.type,
-                                data: image.data
-                            }
-                        }
-                    ]
-                }],
-                generationConfig: { // Requesting structured JSON response
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: "ARRAY",
-                        items: {
-                            type: "OBJECT",
-                            properties: {
-                                "productName": { "type": "STRING" },
-                                "price": { "type": "STRING" }
-                            },
-                            "propertyOrdering": ["productName", "price"]
-                        }
-                    }
-                }
-            };
-
+            let currentRetries = 0;
+            let success = false;
+            // UPDATED STATE: Added 'barcode' to the product structure
             let imageResult = { imageId: image.id, fileName: image.fileName, products: [], error: '' };
 
-            try {
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
+            while (currentRetries < MAX_ATTEMPTS_PER_IMAGE && !success) {
+                try {
+                    const chatHistory = [];
+                    chatHistory.push({ role: "user", parts: [{ text: basePrompt }] });
 
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(`API error: ${response.status} ${response.statusText} - ${errorData.error.message}`);
-                }
-
-                const result = await response.json();
-
-                if (result.candidates && result.candidates.length > 0 &&
-                    result.candidates[0].content && result.candidates[0].content.parts &&
-                    result.candidates[0].content.parts.length > 0) {
-                    const jsonString = result.candidates[0].content.parts[0].text;
-                    try {
-                        const parsedProducts = JSON.parse(jsonString);
-                        if (Array.isArray(parsedProducts)) {
-                            imageResult.products = parsedProducts;
-                        } else {
-                            // Handle cases where the model might return non-array JSON for some reason
-                            imageResult.error = `Unexpected JSON format: ${jsonString}`;
+                    const payload = {
+                        contents: [{
+                            role: "user",
+                            parts: [
+                                { text: basePrompt },
+                                {
+                                    inlineData: {
+                                        mimeType: image.type,
+                                        data: image.data
+                                    }
+                                }
+                            ]
+                        }],
+                        generationConfig: { // Requesting structured JSON response
+                            responseMimeType: "application/json",
+                            responseSchema: {
+                                type: "ARRAY",
+                                items: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        "productName": { "type": "STRING" },
+                                        "price": { "type": "STRING" },
+                                        "brand": { "type": "STRING" },
+                                        "barcode": { "type": "STRING" } // ADDED BARCODE PROPERTY HERE
+                                    },
+                                    "propertyOrdering": ["productName", "price", "brand", "barcode"] // MAINTAIN ORDER
+                                }
+                            }
                         }
-                    } catch (parseError) {
-                        imageResult.error = `Failed to parse AI response: ${jsonString.substring(0, 100)}...`;
-                        console.error("JSON parse error:", parseError);
+                    };
+
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        const errorDetails = await response.json().catch(() => ({})); // Try to parse error, but catch if it's not JSON
+                        throw new Error(`API request failed with status ${response.status}: ${errorDetails.error?.message || 'Unknown error'}`);
                     }
-                } else {
-                    imageResult.error = "AI did not return a valid recognition result.";
+
+                    const rawResponseText = await response.text();
+                    console.log(`Raw AI response for Image ID ${image.id} (Attempt ${currentRetries + 1}):`, rawResponseText);
+
+                    if (!rawResponseText || rawResponseText.trim() === '') {
+                        imageResult.error = "AI returned an empty response. Retrying...";
+                    } else {
+                        try {
+                            const parsedResult = JSON.parse(rawResponseText);
+
+                            if (parsedResult.candidates && parsedResult.candidates.length > 0 &&
+                                parsedResult.candidates[0].content && parsedResult.candidates[0].content.parts &&
+                                parsedResult.candidates[0].content.parts.length > 0) {
+                                const jsonStringFromAI = parsedResult.candidates[0].content.parts[0].text;
+                               
+                                if (!jsonStringFromAI || jsonStringFromAI.trim() === '') {
+                                    imageResult.error = "AI content part was empty. No products identified. Retrying...";
+                                } else {
+                                    try {
+                                        const parsedProducts = JSON.parse(jsonStringFromAI);
+                                        if (Array.isArray(parsedProducts)) {
+                                            // Ensure brand and barcode are 'N/A' if missing from AI response for consistency
+                                            imageResult.products = parsedProducts.map(p => ({
+                                                productName: p.productName || 'N/A',
+                                                price: p.price || 'N/A',
+                                                brand: p.brand || 'N/A', // Ensure N/A for brand if not provided
+                                                barcode: p.barcode || 'N/A' // Ensure N/A for barcode if not provided
+                                            }));
+                                            success = true; // Mark as successful
+                                        } else {
+                                            imageResult.error = `AI returned unexpected product data format. Expected an array of products. Retrying...`;
+                                            console.error("Unexpected product data format for image ID:", image.id, ":", parsedProducts, "Raw AI content part:", jsonStringFromAI);
+                                        }
+                                    } catch (parseError) {
+                                        if (parseError instanceof SyntaxError && parseError.message.includes("Unexpected end of input")) {
+                                            imageResult.error = `AI response was incomplete or cut off for this image. Retrying...`;
+                                        } else {
+                                            imageResult.error = `Failed to parse AI product JSON. Raw content: ${jsonStringFromAI.substring(0, Math.min(jsonStringFromAI.length, 200))}... Retrying...`;
+                                        }
+                                        console.error("JSON parse error from AI content part for image ID:", image.id, parseError, "Raw AI content part response:", jsonStringFromAI);
+                                    }
+                                }
+                            } else {
+                                imageResult.error = "AI response structure invalid (missing candidates/content). Retrying...";
+                                console.error("AI response structure invalid for image ID:", image.id, parsedResult);
+                            }
+                        } catch (parseError) {
+                            if (parseError instanceof SyntaxError && parseError.message.includes("Unexpected end of input")) {
+                                imageResult.error = `AI API response was incomplete or cut off. Retrying...`;
+                            } else {
+                                imageResult.error = `Failed to parse initial AI response as JSON. Raw: ${rawResponseText.substring(0, Math.min(rawResponseText.length, 200))}... Retrying...`;
+                            }
+                            console.error("Initial JSON parse error for image ID:", image.id, parseError, "Raw response text:", rawResponseText);
+                        }
+                    }
+                } catch (err) {
+                    imageResult.error = `Network/Response error: ${err.message}. Retrying...`;
+                    console.error(`Error recognizing products for Image ID ${image.id}:`, err);
                 }
-            } catch (err) {
-                console.error(`Error recognizing products for Image ID ${image.id}:`, err);
-                imageResult.error = `Failed to recognize products: ${err.message}.`;
+
+                if (!success) {
+                    currentRetries++;
+                    if (currentRetries < MAX_ATTEMPTS_PER_IMAGE) {
+                        console.log(`Retrying recognition for Image ID ${image.id}. Attempt ${currentRetries + 1} of ${MAX_ATTEMPTS_PER_IMAGE}`);
+                        await new Promise(resolve => setTimeout(resolve, 500)); // Small delay before retry
+                    } else {
+                        imageResult.error = imageResult.error.replace("Retrying...", "Max retries reached. Please try again later.");
+                    }
+                }
             }
             results.push(imageResult);
         }
@@ -192,8 +259,8 @@ function ProductRecognition() {
 
         setGlobalError(''); // Clear previous errors
 
-        // New headers for product details
-        const headers = ['Image ID', 'File Name', 'Product Name', 'Price', 'Error'];
+        // UPDATED HEADERS: Added 'Barcode' column
+        const headers = ['Image ID', 'File Name', 'Product Name', 'Price', 'Brand', 'Barcode', 'Error'];
         let csvContent = headers.map(escapeCsvValue).join(',') + '\n';
 
         individualRecognitionResults.forEach(item => {
@@ -204,6 +271,8 @@ function ProductRecognition() {
                     escapeCsvValue(item.fileName),
                     '', // Product Name
                     '', // Price
+                    '', // Brand
+                    '', // Barcode
                     escapeCsvValue(item.error)
                 ].join(',') + '\n';
             } else if (item.products && item.products.length > 0) {
@@ -214,6 +283,8 @@ function ProductRecognition() {
                         escapeCsvValue(item.fileName),
                         escapeCsvValue(product.productName),
                         escapeCsvValue(product.price),
+                        escapeCsvValue(product.brand || 'N/A'), // Ensure N/A for brand if not provided
+                        escapeCsvValue(product.barcode || 'N/A'), // ADDED BARCODE HERE, defaults to 'N/A'
                         '' // No error for this product row
                     ].join(',') + '\n';
                 });
@@ -224,6 +295,8 @@ function ProductRecognition() {
                     escapeCsvValue(item.fileName),
                     'No products identified',
                     'N/A',
+                    'N/A', // ADDED 'N/A' for Brand when no products identified
+                    'N/A', // ADDED 'N/A' for Barcode when no products identified
                     ''
                 ].join(',') + '\n';
             }
@@ -248,14 +321,14 @@ function ProductRecognition() {
 
 
     return (
-        <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4 font-inter">
+        <div className="flex flex-col items-center justify-center p-4 mt-12 font-inter">
             <div className="bg-white rounded-2xl shadow-xl p-8 max-w-2xl w-full text-center">
                 <h1 className="text-4xl font-bold text-gray-800 mb-6">Product Recognition App</h1>
 
                 {/* File Input for Image Upload */}
                 <div className="mb-6">
                     <label htmlFor="image-upload" className="block text-gray-700 text-lg font-medium mb-3">
-                        Upload Product Images:
+                        Upload Product Images (Max {MAX_FILES} files):
                     </label>
                     <input
                         type="file"
@@ -346,7 +419,7 @@ function ProductRecognition() {
                                     <ul className="list-disc pl-5">
                                         {item.products.map((product, pIndex) => (
                                             <li key={pIndex} className="mb-1 text-gray-700">
-                                                <span className="font-medium">{product.productName}</span>: {product.price || 'Price N/A'}
+                                                <span className="font-medium">{product.productName}</span>: {product.price || 'Price N/A'} (Brand: {product.brand || 'N/A'}, Barcode: {product.barcode || 'N/A'})
                                             </li>
                                         ))}
                                     </ul>
