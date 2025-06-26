@@ -2,12 +2,18 @@ import React, { useState } from 'react';
 
 function ProductRecognition() {
 
-     // Stores array of objects: { src: dataURL, data: base64Data, id: uniqueId, type: mimeType }
+    // Stores array of objects: { src: dataURL, data: base64Data, id: uniqueId, type: mimeType }
     const [uploadedImages, setUploadedImages] = useState([]);
-    // Stores recognition results for each image: [{ imageId: string, fileName: string, products: [{ productName: string, price: string, brand: string, barcode: string }], error: string }]
+    // Stores recognition results for each image: [{ imageId: string, fileName: string, products: [{ productName: string, price: string, brand: string, barcode: string, weight: string }], error: string }]
     const [individualRecognitionResults, setIndividualRecognitionResults] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
     const [globalError, setGlobalError] = useState(''); // For errors not tied to a specific image
+
+    // New state for LLM features
+    const [selectedProduct, setSelectedProduct] = useState(null); // { imageId, productIndex, productData }
+    const [llmResponse, setLlmResponse] = useState('');
+    const [isLlmLoading, setIsLlmLoading] = useState(false);
+    const [llmError, setLlmError] = useState('');
 
     const MAX_FILES = 1000; // Define the maximum number of files allowed
     const MAX_ATTEMPTS_PER_IMAGE = 3; // Max attempts for AI recognition per image
@@ -24,6 +30,12 @@ function ProductRecognition() {
         setUploadedImages([]);
         setIndividualRecognitionResults([]);
         setGlobalError('');
+       
+        // Clear LLM related states
+        setSelectedProduct(null);
+        setLlmResponse('');
+        setLlmError('');
+
 
         if (files.length === 0) {
             return; // No files selected
@@ -80,6 +92,11 @@ function ProductRecognition() {
         setIsLoading(true);
         setIndividualRecognitionResults([]); // Clear previous results
         setGlobalError('');
+       
+        // Clear LLM related states
+        setSelectedProduct(null);
+        setLlmResponse('');
+        setLlmError('');
 
         if (uploadedImages.length === 0) {
             setGlobalError('Please upload one or more images before attempting to recognize products.');
@@ -88,14 +105,14 @@ function ProductRecognition() {
         }
 
         const results = [];
-        // UPDATED PROMPT: Added request for 'barcode' property
-        const basePrompt = `Identify all distinct products visible in this image. For each product, extract its name, any visible price, any visible brand, and any visible barcode number.
-        Respond with a JSON array where each object has 'productName' (string), 'price' (string, or 'N/A' if no price is visible), 'brand' (string, or 'N/A' if no brand is visible), and 'barcode' (string, or 'N/A' if no barcode is visible).
+        // UPDATED PROMPT: Removed request for 'facings' property
+        const basePrompt = `Identify all distinct products visible in this image. For each product, extract its name, any visible price, any visible brand, any visible barcode number, and any visible weight or volume.
+        Respond with a JSON array where each object has 'productName' (string), 'price' (string, or 'N/A' if no price is visible), 'brand' (string, or 'N/A' if no brand is visible), 'barcode' (string, or 'N/A' if no barcode is visible), and 'weight' (string, or 'N/A' if no weight/volume is visible).
         If no products are identified, return an empty array [].
         Example:
         [
-          {"productName": "Milk (1L)", "price": "$3.49", "brand": "DairyCo", "barcode": "123456789012"},
-          {"productName": "Bread (Whole Wheat)", "price": "N/A", "brand": "Bakery Delights", "barcode": "N/A"}
+          {"productName": "Milk (1L)", "price": "$3.49", "brand": "DairyCo", "barcode": "123456789012", "weight": "1L"},
+          {"productName": "Bread (Whole Wheat)", "price": "N/A", "brand": "Bakery Delights", "barcode": "N/A", "weight": "400g"}
         ]`;
         const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
@@ -103,7 +120,7 @@ function ProductRecognition() {
         for (const image of uploadedImages) {
             let currentRetries = 0;
             let success = false;
-            // UPDATED STATE: Added 'barcode' to the product structure
+            // UPDATED STATE: Removed 'facings' from the product structure
             let imageResult = { imageId: image.id, fileName: image.fileName, products: [], error: '' };
 
             while (currentRetries < MAX_ATTEMPTS_PER_IMAGE && !success) {
@@ -124,7 +141,7 @@ function ProductRecognition() {
                                 }
                             ]
                         }],
-                        generationConfig: { // Requesting structured JSON response
+                        generationConfig: {
                             responseMimeType: "application/json",
                             responseSchema: {
                                 type: "ARRAY",
@@ -134,9 +151,10 @@ function ProductRecognition() {
                                         "productName": { "type": "STRING" },
                                         "price": { "type": "STRING" },
                                         "brand": { "type": "STRING" },
-                                        "barcode": { "type": "STRING" } // ADDED BARCODE PROPERTY HERE
+                                        "barcode": { "type": "STRING" },
+                                        "weight": { "type": "STRING" }
                                     },
-                                    "propertyOrdering": ["productName", "price", "brand", "barcode"] // MAINTAIN ORDER
+                                    "propertyOrdering": ["productName", "price", "brand", "barcode", "weight"] // MAINTAIN ORDER
                                 }
                             }
                         }
@@ -149,7 +167,7 @@ function ProductRecognition() {
                     });
 
                     if (!response.ok) {
-                        const errorDetails = await response.json().catch(() => ({})); // Try to parse error, but catch if it's not JSON
+                        const errorDetails = await response.json().catch(() => ({}));
                         throw new Error(`API request failed with status ${response.status}: ${errorDetails.error?.message || 'Unknown error'}`);
                     }
 
@@ -173,12 +191,12 @@ function ProductRecognition() {
                                     try {
                                         const parsedProducts = JSON.parse(jsonStringFromAI);
                                         if (Array.isArray(parsedProducts)) {
-                                            // Ensure brand and barcode are 'N/A' if missing from AI response for consistency
                                             imageResult.products = parsedProducts.map(p => ({
                                                 productName: p.productName || 'N/A',
                                                 price: p.price || 'N/A',
-                                                brand: p.brand || 'N/A', // Ensure N/A for brand if not provided
-                                                barcode: p.barcode || 'N/A' // Ensure N/A for barcode if not provided
+                                                brand: p.brand || 'N/A',
+                                                barcode: p.barcode || 'N/A',
+                                                weight: p.weight || 'N/A'
                                             }));
                                             success = true; // Mark as successful
                                         } else {
@@ -230,6 +248,127 @@ function ProductRecognition() {
     };
 
     /**
+     * Handles selection of a product from the recognized list for LLM actions.
+     * @param {string} imageId The ID of the image the product belongs to.
+     * @param {number} productIndex The index of the product within the image's products array.
+     */
+    const handleSelectProduct = (imageId, productIndex) => {
+        const imageResult = individualRecognitionResults.find(item => item.imageId === imageId);
+        if (imageResult && imageResult.products[productIndex]) {
+            setSelectedProduct({
+                imageId,
+                productIndex,
+                productData: imageResult.products[productIndex]
+            });
+            setLlmResponse(''); // Clear previous LLM response
+            setLlmError(''); // Clear previous LLM error
+        }
+    };
+
+    /**
+     * Calls Gemini API to generate a product description.
+     */
+    const handleGenerateDescription = async () => {
+        if (!selectedProduct) {
+            setLlmError('Please select a product first.');
+            return;
+        }
+
+        setIsLlmLoading(true);
+        setLlmResponse('');
+        setLlmError('');
+
+        const { productName, brand, price, weight } = selectedProduct.productData;
+        const descriptionPrompt = `Generează o scurtă descriere de marketing pentru următorul produs, evidențiind numele, brandul, prețul și greutatea/volumul dacă sunt disponibile:
+        Nume Produs: ${productName}
+        Brand: ${brand !== 'N/A' ? brand : 'necunoscut'}
+        Preț: ${price !== 'N/A' ? price : 'indisponibil'}
+        Greutate/Volum: ${weight !== 'N/A' ? weight : 'necunoscut'}
+        Descrierea ar trebui să fie atractivă și concisă, de maxim 3-4 propoziții.`;
+       
+        try {
+            const chatHistory = [{ role: "user", parts: [{ text: descriptionPrompt }] }];
+            const payload = { contents: chatHistory };
+            const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(`API error: ${response.status} ${response.statusText} - ${errorData.error?.message || 'Unknown API Error'}`);
+            }
+
+            const result = await response.json();
+            if (result.candidates && result.candidates.length > 0 && result.candidates[0].content && result.candidates[0].content.parts && result.candidates[0].content.parts.length > 0) {
+                setLlmResponse(result.candidates[0].content.parts[0].text);
+            } else {
+                setLlmError('Nu s-a putut genera o descriere. Încercați din nou.');
+            }
+        } catch (err) {
+            setLlmError(`Eroare la generarea descrierii: ${err.message}.`);
+            console.error("LLM description error:", err);
+        } finally {
+            setIsLlmLoading(false);
+        }
+    };
+
+    /**
+     * Calls Gemini API to suggest usage ideas for a product.
+     */
+    const handleSuggestUsage = async () => {
+        if (!selectedProduct) {
+            setLlmError('Please select a product first.');
+            return;
+        }
+
+        setIsLlmLoading(true);
+        setLlmResponse('');
+        setLlmError('');
+
+        const { productName, brand, weight } = selectedProduct.productData;
+        const usagePrompt = `Sugerează 3-5 idei creative de utilizare pentru următorul produs. Dacă este un aliment, include idei de rețete. Dacă este un produs non-alimentar, sugerează utilizări practice sau inovatoare.
+        Nume Produs: ${productName}
+        Brand: ${brand !== 'N/A' ? brand : 'necunoscut'}
+        Greutate/Volum: ${weight !== 'N/A' ? weight : 'necunoscut'}`;
+       
+        try {
+            const chatHistory = [{ role: "user", parts: [{ text: usagePrompt }] }];
+            const payload = { contents: chatHistory };
+            const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(`API error: ${response.status} ${response.statusText} - ${errorData.error?.message || 'Unknown API Error'}`);
+            }
+
+            const result = await response.json();
+            if (result.candidates && result.candidates.length > 0 && result.candidates[0].content && result.candidates[0].content.parts && result.candidates[0].content.parts.length > 0) {
+                setLlmResponse(result.candidates[0].content.parts[0].text);
+            } else {
+                setLlmError('Nu s-au putut genera sugestii de utilizare. Încercați din nou.');
+            }
+        } catch (err) {
+            setLlmError(`Eroare la generarea sugestiilor: ${err.message}.`);
+            console.error("LLM usage error:", err);
+        } finally {
+            setIsLlmLoading(false);
+        }
+    };
+
+
+    /**
      * Helper function to escape CSV values that might contain commas or newlines.
      * @param {string} value The string value to escape.
      * @returns {string} The escaped string.
@@ -259,44 +398,36 @@ function ProductRecognition() {
 
         setGlobalError(''); // Clear previous errors
 
-        // UPDATED HEADERS: Added 'Barcode' column
-        const headers = ['Image ID', 'File Name', 'Product Name', 'Price', 'Brand', 'Barcode', 'Error'];
+        // UPDATED HEADERS: Removed 'Facings' column
+        const headers = ['Image ID', 'File Name', 'Product Name', 'Price', 'Brand', 'Barcode', 'Weight', 'Error'];
         let csvContent = headers.map(escapeCsvValue).join(',') + '\n';
 
         individualRecognitionResults.forEach(item => {
             if (item.error) {
-                // If there's an error for the image, just put the error in a row
                 csvContent += [
                     escapeCsvValue(item.imageId),
                     escapeCsvValue(item.fileName),
-                    '', // Product Name
-                    '', // Price
-                    '', // Brand
-                    '', // Barcode
+                    '', '', '', '', '', // Empty for product details
                     escapeCsvValue(item.error)
                 ].join(',') + '\n';
             } else if (item.products && item.products.length > 0) {
-                // If products are recognized, add a row for each product
                 item.products.forEach(product => {
                     csvContent += [
                         escapeCsvValue(item.imageId),
                         escapeCsvValue(item.fileName),
                         escapeCsvValue(product.productName),
                         escapeCsvValue(product.price),
-                        escapeCsvValue(product.brand || 'N/A'), // Ensure N/A for brand if not provided
-                        escapeCsvValue(product.barcode || 'N/A'), // ADDED BARCODE HERE, defaults to 'N/A'
+                        escapeCsvValue(product.brand || 'N/A'),
+                        escapeCsvValue(product.barcode || 'N/A'),
+                        escapeCsvValue(product.weight || 'N/A'),
                         '' // No error for this product row
                     ].join(',') + '\n';
                 });
             } else {
-                // Case where no products were identified and no error occurred (e.g., empty image, or AI said no products)
                 csvContent += [
                     escapeCsvValue(item.imageId),
                     escapeCsvValue(item.fileName),
-                    'No products identified',
-                    'N/A',
-                    'N/A', // ADDED 'N/A' for Brand when no products identified
-                    'N/A', // ADDED 'N/A' for Barcode when no products identified
+                    'No products identified', 'N/A', 'N/A', 'N/A', 'N/A', // Removed 'N/A' for Facings
                     ''
                 ].join(',') + '\n';
             }
@@ -304,7 +435,7 @@ function ProductRecognition() {
 
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
-        if (link.download !== undefined) { // Feature detection for HTML5 download attribute
+        if (link.download !== undefined) {
             const url = URL.createObjectURL(blob);
             link.setAttribute('href', url);
             link.setAttribute('download', 'product_recognition_results.csv');
@@ -312,29 +443,28 @@ function ProductRecognition() {
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
-            URL.revokeObjectURL(url); // Clean up the URL object
+            URL.revokeObjectURL(url);
         } else {
-            // Fallback for browsers that don't support the download attribute
             window.open(encodeURI("data:text/csv;charset=utf-8," + csvContent));
         }
     };
 
 
     return (
-        <div className="flex flex-col items-center justify-center p-4 mt-12 font-inter">
+        <div className="min-h-screen flex flex-col items-center mt-4 p-4 font-inter">
             <div className="bg-white rounded-2xl shadow-xl p-8 max-w-2xl w-full text-center">
                 <h1 className="text-4xl font-bold text-gray-800 mb-6">Product Recognition App</h1>
 
                 {/* File Input for Image Upload */}
                 <div className="mb-6">
                     <label htmlFor="image-upload" className="block text-gray-700 text-lg font-medium mb-3">
-                        Upload Product Images (Max {MAX_FILES} files):
+                        Upload product images (Max {MAX_FILES} files):
                     </label>
                     <input
                         type="file"
                         id="image-upload"
                         accept="image/*"
-                        multiple // Allows multiple file selection
+                        multiple
                         onChange={handleImageUpload}
                         className="block w-full text-sm text-gray-500
                                    file:mr-4 file:py-2 file:px-4
@@ -356,7 +486,7 @@ function ProductRecognition() {
                                 <p className="text-xs text-gray-600 mt-1 break-all px-1">ID: <span className="font-mono text-blue-700">{image.id}</span></p>
                             </div>
                         ))}
-                        <p className="text-sm text-gray-500 col-span-full mt-2">Previews of your uploaded images</p>
+                        <p className="text-sm text-gray-500 col-span-full mt-2">Preview of uploaded images</p>
                     </div>
                 ) : (
                     <div className="mb-8 p-4 border-2 border-dashed border-red-300 rounded-lg bg-red-50 text-red-700">
@@ -383,10 +513,10 @@ function ProductRecognition() {
                                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                                 </svg>
-                                Recognizing...
+                                Recognize...
                             </div>
                         ) : (
-                            'Recognize Products'
+                            'Recognise products'
                         )}
                     </button>
 
@@ -401,7 +531,7 @@ function ProductRecognition() {
                             }
                         `}
                     >
-                        Export Results to CSV
+                        Export results in CVS
                     </button>
                 </div>
 
@@ -409,32 +539,84 @@ function ProductRecognition() {
                 {/* Recognition Result Display */}
                 {individualRecognitionResults.length > 0 && (
                     <div className="mt-8 bg-green-50 border border-green-300 text-green-800 p-6 rounded-lg text-left shadow-inner">
-                        <h3 className="text-xl font-semibold mb-4">Recognition Results:</h3>
+                        <h3 className="text-xl font-semibold mb-4">Rezultate Recunoaștere:</h3>
                         {individualRecognitionResults.map((item) => (
                             <div key={item.imageId} className="mb-6 pb-4 border-b border-green-200 last:border-b-0">
-                                <h4 className="text-lg font-bold text-gray-800 mb-2">Image: <span className="font-mono text-blue-800">{item.fileName || 'N/A'}</span> (ID: <span className="font-mono text-blue-800">{item.imageId}</span>)</h4>
+                                <h4 className="text-lg font-bold text-gray-800 mb-2">Imagine: <span className="font-mono text-blue-800">{item.fileName || 'N/A'}</span> (ID: <span className="font-mono text-blue-800">{item.imageId}</span>)</h4>
                                 {item.error ? (
                                     <p className="text-red-700 font-semibold">{item.error}</p>
                                 ) : item.products && item.products.length > 0 ? (
                                     <ul className="list-disc pl-5">
                                         {item.products.map((product, pIndex) => (
-                                            <li key={pIndex} className="mb-1 text-gray-700">
-                                                <span className="font-medium">{product.productName}</span>: {product.price || 'Price N/A'} (Brand: {product.brand || 'N/A'}, Barcode: {product.barcode || 'N/A'})
+                                            <li key={pIndex} className={`mb-1 text-gray-700 cursor-pointer p-1 rounded-md ${selectedProduct?.imageId === item.imageId && selectedProduct?.productIndex === pIndex ? 'bg-blue-100 border border-blue-400' : 'hover:bg-gray-50'}`}
+                                                onClick={() => handleSelectProduct(item.imageId, pIndex)}>
+                                                <span className="font-medium">{product.productName}</span>: {product.price || 'Price N/A'} (Brand: {product.brand || 'N/A'}, Barcode: {product.barcode || 'N/A'}, Weight: {product.weight || 'N/A'})
                                             </li>
                                         ))}
                                     </ul>
                                 ) : (
-                                    <p className="text-gray-700">No distinct products identified.</p>
+                                    <p className="text-gray-700">Nu au fost identificate produse distincte.</p>
                                 )}
                             </div>
                         ))}
                     </div>
                 )}
 
+                {/* LLM Features Section */}
+                {selectedProduct && (
+                    <div className="mt-8 bg-blue-50 border border-blue-300 text-blue-800 p-6 rounded-lg shadow-inner">
+                        <h3 className="text-xl font-semibold mb-4">Funcții AI pentru Produsul Selectat:</h3>
+                        <p className="text-gray-700 mb-4">
+                            Produs selectat: <span className="font-bold">{selectedProduct.productData.productName}</span> (ID Imagine: <span className="font-mono">{selectedProduct.imageId.substring(0, 8)}...</span>)
+                        </p>
+                        <div className="flex flex-col sm:flex-row gap-4 justify-center mb-6">
+                            <button
+                                onClick={handleGenerateDescription}
+                                disabled={isLlmLoading}
+                                className={`
+                                    w-full sm:w-auto flex-grow py-3 px-6 rounded-full text-white font-semibold transition-all duration-300
+                                    ${isLlmLoading
+                                        ? 'bg-purple-300 cursor-not-allowed'
+                                        : 'bg-purple-600 hover:bg-purple-700 shadow-md hover:shadow-lg transform hover:scale-105'
+                                    }
+                                `}
+                            >
+                                {isLlmLoading ? 'Generare Descriere...' : 'Generează Descriere Produs ✨'}
+                            </button>
+                            <button
+                                onClick={handleSuggestUsage}
+                                disabled={isLlmLoading}
+                                className={`
+                                    w-full sm:w-auto flex-grow py-3 px-6 rounded-full text-white font-semibold transition-all duration-300
+                                    ${isLlmLoading
+                                        ? 'bg-purple-300 cursor-not-allowed'
+                                        : 'bg-purple-600 hover:bg-purple-700 shadow-md hover:shadow-lg transform hover:scale-105'
+                                    }
+                                `}
+                            >
+                                {isLlmLoading ? 'Generare Sugestii...' : 'Sugestii de Utilizare Produs ✨'}
+                            </button>
+                        </div>
+                        {llmResponse && (
+                            <div className="mt-4 bg-blue-100 border border-blue-400 text-blue-800 p-4 rounded-lg text-left whitespace-pre-wrap">
+                                <h4 className="font-semibold mb-2">Răspuns AI:</h4>
+                                {llmResponse}
+                            </div>
+                        )}
+                        {llmError && (
+                            <div className="mt-4 bg-red-100 border border-red-400 text-red-800 p-4 rounded-lg text-left">
+                                <h4 className="font-semibold mb-2">Eroare AI:</h4>
+                                {llmError}
+                            </div>
+                        )}
+                    </div>
+                )}
+
+
                 {/* Global Error Message Display */}
                 {globalError && (
                     <div className="mt-8 bg-red-50 border border-red-300 text-red-800 p-6 rounded-lg text-left shadow-inner">
-                        <h3 className="text-xl font-semibold mb-3">Error:</h3>
+                        <h3 className="text-xl font-semibold mb-3">Eroare:</h3>
                         <p>{globalError}</p>
                     </div>
                 )}

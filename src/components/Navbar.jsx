@@ -44,15 +44,18 @@ function Navbar() {
           )}
 
           <li>
-            <NavLink to="/company" className={({ isActive }) => `nav-link text-dark ${isActive ? "active" : ""}`}>Company</NavLink>
-          </li>
-
-          <li>
-            <NavLink to="/other-projects" className={({ isActive }) => `nav-link text-dark ${isActive ? "active" : ""}`}>Other Projects</NavLink>
-          </li>
-
-          <li>
             <NavLink to="/about-app" className={({ isActive }) => `nav-link text-dark ${isActive ? "active" : ""}`}>About App</NavLink>
+          </li>
+
+          <li>
+            <a 
+              href="https://www.marketvector.eu/" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="nav-link text-dark text-decoration-none"
+            >
+              Company
+            </a>
           </li>
 
           {/* Auth Buttons */}
